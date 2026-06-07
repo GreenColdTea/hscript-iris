@@ -22,6 +22,7 @@
 
 package crowplexus.hscript;
 
+import haxe.Constraints.Function;
 import Type.ValueType;
 import crowplexus.hscript.Expr;
 import crowplexus.hscript.Tools;
@@ -147,6 +148,19 @@ class Interp {
 			return expr1 == null ? me.expr(e2) : expr1;
 		});
 		binops.set("...", function(e1, e2) return new InterpIterator(me, e1, e2));
+
+		binops.set("??=", function(e1, e2) {
+			var v1: Dynamic = me.expr(e1);
+			if (v1 != null) return v1;
+			return me.assign(e1, e2);
+		});
+
+		binops.set("is", function(e1, e2) {
+			var val1 = me.expr(e1);
+			var val2 = me.expr(e2); 
+			return Std.isOfType(val1, val2);
+		});
+
 		assignOp("+=", function(v1: Dynamic, v2: Dynamic) return v1 + v2);
 		assignOp("-=", function(v1: Float, v2: Float) return v1 - v2);
 		assignOp("*=", function(v1: Float, v2: Float) return v1 * v2);
@@ -158,7 +172,6 @@ class Interp {
 		assignOp("<<=", function(v1, v2) return v1 << v2);
 		assignOp(">>=", function(v1, v2) return v1 >> v2);
 		assignOp(">>>=", function(v1, v2) return v1 >>> v2);
-		assignOp("??" + "=", function(v1, v2) return v1 == null ? v2 : v1);
 	}
 
 	public inline function setVar(name: String, v: Dynamic) {
@@ -264,12 +277,11 @@ class Interp {
 							error(ECustom("Cannot reassign final, for constant expression -> " + id));
 					}
 				}
-				if (l == null) {
-					if (prefix) {
-						v += delta;
-						setTo(v);
-					} else
-						setTo(v + delta);
+				if (prefix) {
+					v += delta;
+					setTo(v);
+				} else {
+					setTo(v + delta);
 				}
 				return v;
 			case EField(e, f, s):
@@ -473,19 +485,54 @@ class Interp {
 						null;
 				}
 			case ECall(e, params):
-				var args = new Array();
-				for (p in params)
-					args.push(expr(p));
-
 				switch (Tools.expr(e)) {
 					case EField(e, f, s):
-						var obj = expr(e);
-						if (obj == null)
-							if (!s)
-								error(EInvalidAccess(f));
-						return fcall(obj, f, args);
+						var obj: Dynamic = expr(e);
+
+						if (obj == null) {
+							if (s == true)
+								return null;
+							error(EInvalidAccess(f));
+						}
+
+						if (f == "bind" && Reflect.isFunction(obj)) {
+							var obj: Function = obj;
+							if (params.length == 0) { // Special case for function.bind()
+								return Reflect.makeVarArgs(function(ar: Array<Dynamic>) {
+									return obj();
+								});
+							}
+
+							// bind(_, false) => function(a1) return obj(a1, false);
+							// bind(false, _) => function(a2) return obj(false, a2);
+							// bind(_, _) => function(a1, a2) return obj(a1, a2);
+
+							var totalNeeded = 0;
+							var args = [];
+							for (p in params) {
+								switch (Tools.expr(p)) {
+									case EIdent(_):
+										args.push(null);
+										totalNeeded++;
+									default:
+										args.push(p);
+								}
+							}
+							var me = this;
+							// TODO: make it increment the depth?
+							return Reflect.makeVarArgs(function(ar: Array<Dynamic>) {
+								if (ar.length < totalNeeded)
+									error(ECustom("Too few arguments")); // TODO: make it say like "Not enough arguments, expected a:Int"
+								var i = 0;
+								var actualArgs = [for (a in args) if (a != null) me.expr(a) else ar[i++]];
+								return Reflect.callMethod(null, obj, actualArgs);
+							});
+						}
+
+						return fcall(obj, f, [for (p in params) expr(p)]);
 					default:
-						return call(null, expr(e), args);
+						var field = expr(e);
+						return call(null, field, [for (p in params) expr(p)]);
 				}
 			case EIf(econd, e1, e2):
 				return if (expr(econd) == true) expr(e1) else if (e2 == null) null else expr(e2);
@@ -495,8 +542,8 @@ class Interp {
 			case EDoWhile(econd, e):
 				doWhileLoop(econd, e);
 				return null;
-			case EFor(v, it, e):
-				forLoop(v, it, e);
+			case EFor(i, v, it, e):
+				forLoop(i, v, it, e);
 				return null;
 			case EBreak:
 				throw SBreak;
@@ -517,6 +564,12 @@ class Interp {
 					return imports.get(n);
 
 				var c: Dynamic = getOrImportClass(v);
+				if (c == null)
+					c = Type.resolveEnum(v);
+
+				if (c == null)
+					c = Type.resolveClass(v + "_Impl_");
+
 				if (c == null) // if it's still null then throw an error message.
 					return warn(ECustom("Import" + aliasStr + " of class " + v + " could not be added"));
 				else {
@@ -549,15 +602,22 @@ class Interp {
 						var args2 = [];
 						var extraParams = args.length - minParams;
 						var pos = 0;
-						for (p in params)
+						for (p in params) {
+							var argVal:Dynamic = null;
 							if (p.opt) {
 								if (extraParams > 0) {
-									args2.push(args[pos++]);
+									argVal = args[pos++];
 									extraParams--;
-								} else
-									args2.push(null);
-							} else
-								args2.push(args[pos++]);
+								}
+							} else {
+								argVal = args[pos++];
+							}
+							
+							if (argVal == null && p.value != null)
+								argVal = me.expr(p.value);
+							
+							args2.push(argVal);
+						}
 						args = args2;
 					}
 					var old = me.locals, depth = me.depth;
@@ -815,14 +875,52 @@ class Interp {
 		return v;
 	}
 
-	function forLoop(n, it, e) {
+	function makeKVIterator(v: Dynamic): Null<KeyValueIterator<Dynamic, Dynamic>> {
+		#if ((flash && !flash9) || (php && !php7 && haxe_ver < '4.0.0'))
+		if (v.keyValueIterator != null) {
+			return v.keyValueIterator();
+		} else {
+			if (v.iterator != null) {
+				v = v.iterator();
+			}
+		}
+		#else
+		try {
+			return v.keyValueIterator();
+		} catch (e:Dynamic) {
+			try {
+				v = v.iterator();
+			} catch (e:Dynamic) {};
+		};
+		#end
+		if (v.hasNext == null || v.next == null)
+			error(EInvalidKVIterator(v));
+		return v;
+	}
+
+	function forLoop(n, v, itExpr, e) {
 		var old = declared.length;
 		declared.push({n: n, old: locals.get(n)});
-		var it = makeIterator(expr(it));
+		var keyValue: Bool = false;
+		if (v != null) {
+			keyValue = true;
+			declared.push({n: v, old: locals.get(v)});
+		}
+		var it = (keyValue ? makeKVIterator : makeIterator)(expr(itExpr));
 		var _itHasNext = it.hasNext;
 		var _itNext = it.next;
 		while (_itHasNext()) {
-			locals.set(n, {r: _itNext(), const: false});
+			if (keyValue) {
+				var next = _itNext();
+				if (next.key == null || next.value == null) {
+					var nulled: String = (next.key == null ? 'key' : 'value');
+					error(ECustom('${Std.isOfType(next, Int) ? 'Int' : Type.getClassName(Type.getClass(next))} has no field $nulled'));
+				}
+				locals.set(n, {r: next.key, const: false});
+				locals.set(v, {r: next.value, const: false});
+			} else {
+				locals.set(n, {r: _itNext(), const: false});
+			}
 			try {
 				expr(e);
 			} catch (err:Stop) {
