@@ -191,14 +191,14 @@ class Interp {
 					else
 						warn(ECustom("Cannot reassign final, for constant expression -> " + id));
 				}
-			case EField(e, f, s):
-				var e = expr(e);
-				if (e == null)
-					if (!s)
-						error(EInvalidAccess(f));
-					else
+			case EField(eInner, f, isSafe):
+				var obj = expr(eInner);
+				if (obj == null) {
+					if (isSafe == true) 
 						return null;
-				v = set(e, f, v);
+					return error(EInvalidAccess(f));
+				}
+				v = set(obj, f, v);
 			case EArray(e, index):
 				var arr: Dynamic = expr(e);
 				var index: Dynamic = expr(index);
@@ -233,13 +233,13 @@ class Interp {
 					else
 						warn(ECustom("Cannot reassign final, for constant expression -> " + id));
 				}
-			case EField(e, f, s):
-				var obj = expr(e);
-				if (obj == null)
-					if (!s)
-						error(EInvalidAccess(f));
-					else
+			case EField(eInner, f, isSafe):
+				var obj = expr(eInner);
+				if (obj == null) {
+					if (isSafe == true) 
 						return null;
+					return error(EInvalidAccess(f));
+				}
 				v = fop(get(obj, f), expr(e2));
 				v = set(obj, f, v);
 			case EArray(e, index):
@@ -452,13 +452,14 @@ class Interp {
 					v = expr(e);
 				restore(old);
 				return v;
-			case EField(e, f, true):
-				var e = expr(e);
-				if (e == null)
-					return null;
-				return get(e, f);
-			case EField(e, f, false):
-				return get(expr(e), f);
+			case EField(eInner, f, isSafe):
+				var obj = expr(eInner);
+				if (obj == null) {
+					if (isSafe == true) 
+						return null;
+					return error(EInvalidAccess(f));
+				}
+				return get(obj, f);
 			case EBinop(op, e1, e2):
 				var fop = binops.get(op);
 				if (fop == null)
@@ -486,7 +487,7 @@ class Interp {
 				}
 			case ECall(e, params):
 				switch (Tools.expr(e)) {
-					case EField(e, f, s):
+					case EField(eInner, f, isSafe):
 						var obj: Dynamic = expr(e);
 
 						if (obj == null) {
