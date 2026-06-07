@@ -488,10 +488,9 @@ class Interp {
 			case ECall(e, params):
 				switch (Tools.expr(e)) {
 					case EField(eInner, f, isSafe):
-						var obj: Dynamic = expr(e);
-
+						var obj: Dynamic = expr(eInner);
 						if (obj == null) {
-							if (s == true)
+							if (isSafe == true)
 								return null;
 							error(EInvalidAccess(f));
 						}
