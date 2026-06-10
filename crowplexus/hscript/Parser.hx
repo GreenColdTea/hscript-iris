@@ -740,6 +740,15 @@ class Parser {
 			case "var", "final":
 				var ident = getIdent();
 				var tk = token();
+
+				if (tk == TPOpen) {
+					var get = getIdent();
+					ensure(TComma);
+					var set = getIdent();
+					ensure(TPClose);
+					tk = token();
+				}
+
 				var t = null;
 				if (tk == TDoubleDot && allowTypes) {
 					t = parseType();

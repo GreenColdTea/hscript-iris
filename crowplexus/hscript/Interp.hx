@@ -70,6 +70,9 @@ class Interp {
 	var declared: Array<DeclaredVar>;
 	var returnValue: Dynamic;
 
+	var activeGets: Array<String>;
+	var activeSets: Array<String>;
+
 	#if hscriptPos
 	var curExpr: Expr;
 	#end
@@ -83,6 +86,8 @@ class Interp {
 		locals = new Hash();
 		#end
 		declared = new Array();
+		activeGets = [];
+		activeSets = [];
 		resetVariables();
 		initOps();
 	}
@@ -182,14 +187,28 @@ class Interp {
 		var v = expr(e2);
 		switch (Tools.expr(e1)) {
 			case EIdent(id):
+				var setterName = "set_" + id;
+				if (activeSets.indexOf(id) == -1) {
+					var setterFunc = null;
+					if (locals.exists(setterName)) setterFunc = locals.get(setterName).r;
+					else if (variables.exists(setterName)) setterFunc = variables.get(setterName);
+					
+					if (setterFunc != null && Reflect.isFunction(setterFunc)) {
+						activeSets.push(id);
+						var res = null;
+						try { res = Reflect.callMethod(null, setterFunc, [v]); } 
+						catch(e:Dynamic) { activeSets.remove(id); throw e; }
+						activeSets.remove(id);
+						return res;
+					}
+				}
+
 				var l = locals.get(id);
-				if (l == null)
+				if (l == null) 
 					setVar(id, v)
 				else {
-					if (l.const != true)
-						l.r = v;
-					else
-						warn(ECustom("Cannot reassign final, for constant expression -> " + id));
+					if (l.const != true) l.r = v;
+					else warn(ECustom("Cannot reassign final, for constant expression -> " + id));
 				}
 			case EField(eInner, f, isSafe):
 				var obj = expr(eInner);
@@ -265,24 +284,34 @@ class Interp {
 		#end
 		switch (e) {
 			case EIdent(id):
-				var l = locals.get(id);
-				var v: Dynamic = (l == null) ? resolve(id) : l.r;
+				var v: Dynamic = resolve(id);
+				
 				function setTo(a) {
-					if (l == null)
-						setVar(id, a)
+					var setterName = "set_" + id;
+					if (activeSets.indexOf(id) == -1) {
+						var setterFunc = null;
+						if (locals.exists(setterName)) setterFunc = locals.get(setterName).r;
+						else if (variables.exists(setterName)) setterFunc = variables.get(setterName);
+						
+						if (setterFunc != null && Reflect.isFunction(setterFunc)) {
+							activeSets.push(id);
+							try { Reflect.callMethod(null, setterFunc, [a]); } 
+							catch(e:Dynamic) { activeSets.remove(id); throw e; }
+							activeSets.remove(id);
+							return;
+						}
+					}
+
+					var l = locals.get(id);
+					if (l == null) setVar(id, a)
 					else {
-						if (l.const != true)
-							l.r = a;
-						else
-							error(ECustom("Cannot reassign final, for constant expression -> " + id));
+						if (l.const != true) l.r = a;
+						else error(ECustom("Cannot reassign final, for constant expression -> " + id));
 					}
 				}
-				if (prefix) {
-					v += delta;
-					setTo(v);
-				} else {
-					setTo(v + delta);
-				}
+				
+				if (prefix) { v += delta; setTo(v); } 
+				else { setTo(v + delta); }
 				return v;
 			case EField(e, f, s):
 				var obj = expr(e);
@@ -332,6 +361,8 @@ class Interp {
 		locals = new Hash();
 		#end
 		declared = new Array();
+		activeGets = [];
+		activeSets = [];
 		return exprReturn(expr);
 	}
 
@@ -395,23 +426,31 @@ class Interp {
 	}
 
 	function resolve(id: String): Dynamic {
-		if (locals.exists(id)) {
-			var l = locals.get(id);
-			return l.r;
+		var getterName = "get_" + id;
+		if (activeGets.indexOf(id) == -1) {
+			var getterFunc = null;
+			if (locals.exists(getterName)) getterFunc = locals.get(getterName).r;
+			else if (variables.exists(getterName)) getterFunc = variables.get(getterName);
+			
+			if (getterFunc != null && Reflect.isFunction(getterFunc)) {
+				activeGets.push(id);
+				var res = null;
+				try {
+					res = Reflect.callMethod(null, getterFunc, []);
+				} catch(e:Dynamic) {
+					activeGets.remove(id);
+					throw e;
+				}
+				activeGets.remove(id);
+				return res;
+			}
 		}
 
-		if (variables.exists(id)) {
-			var v = variables.get(id);
-			return v;
-		}
-
-		if (imports.exists(id)) {
-			var v = imports.get(id);
-			return v;
-		}
+		if (locals.exists(id)) return locals.get(id).r;
+		if (variables.exists(id)) return variables.get(id);
+		if (imports.exists(id)) return imports.get(id);
 
 		error(EUnknownVariable(id));
-
 		return null;
 	}
 
