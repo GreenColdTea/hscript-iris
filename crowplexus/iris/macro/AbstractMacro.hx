@@ -11,6 +11,10 @@ import sys.io.File;
 using StringTools;
 #end
 
+/**
+ * Kinda like in `RuleScript`
+ */
+
 class AbstractMacro
 {
     macro public static function init():haxe.macro.Expr

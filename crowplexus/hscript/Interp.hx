@@ -460,6 +460,10 @@ class Interp {
 			if (c == null) c = Type.resolveEnum(clName);
 			if (c == null) c = Type.resolveClass(clName + "_Impl_");
 			
+			if (c == null && Iris.proxyImports.exists(id)) {
+				c = Iris.proxyImports.get(id);
+			}
+
 			if (c != null) {
 				imports.set(id, c);
 				return c;
@@ -888,6 +892,156 @@ class Interp {
 		return null;
 	}
 
+	public function executeModule(decls: Array<crowplexus.hscript.Expr.ModuleDecl>) {
+		for (d in decls) {
+			switch (d) {
+				case DClass(c):
+					var superClass: Dynamic = null;
+					if (c.extend != null) {
+						switch (c.extend) {
+							case CTPath(p):
+								var superClassName = p.pack.concat([p.name]).join(".");
+								superClass = resolve(superClassName);
+							default:
+						}
+					}
+					var classObj = createScriptClass(c, superClass);
+					variables.set(c.name, classObj);
+
+				case DImport(path, star, asStr):
+					var v = path.join(".");
+					
+					if (Iris.blocklistImports.contains(v)) {
+						error(ECustom("You cannot add a blacklisted import, for class " + v));
+						continue;
+					}
+
+					if (star) {
+						if (!wildcardPackages.contains(v)) wildcardPackages.push(v);
+					} else {
+						var n = path[path.length - 1];
+						var c: Dynamic = getOrImportClass(v);
+						if (c == null) c = Type.resolveEnum(v);
+						if (c == null) c = Type.resolveClass(v + "_Impl_");
+						
+						if (c != null) {
+							imports.set(n, c);
+							if (asStr != null && asStr != "") imports.set(asStr, c);
+						} else {
+							warn(ECustom("Import of class " + v + " could not be added"));
+						}
+					}
+				default:
+			}
+		}
+	}
+
+	inline function mkDummyExpr(edef: crowplexus.hscript.Expr.ExprDef): crowplexus.hscript.Expr {
+		#if hscriptPos
+		return { e: edef, pmin: 0, pmax: 0, origin: "hscript", line: 0 };
+		#else
+		return edef;
+		#end
+	}
+
+	function createScriptClass(c: crowplexus.hscript.Expr.ClassDecl, superClass: Dynamic): Dynamic {
+		var classObj = {
+			__isScriptClass: true,
+			__name: c.name,
+			__superClass: superClass,
+			__fields: c.fields
+		};
+
+		var constructorDecl = null;
+		for (f in c.fields) {
+			if (f.name == "new") {
+				constructorDecl = f;
+			}
+			if (f.access.contains(AStatic)) {
+				switch (f.kind) {
+					case KFunction(fdecl):
+						Reflect.setField(classObj, f.name, expr(mkDummyExpr(crowplexus.hscript.Expr.ExprDef.EFunction(fdecl.args, fdecl.expr, f.name, fdecl.ret))));
+					case KVar(vdecl):
+						var val = vdecl.expr != null ? expr(vdecl.expr) : null;
+						Reflect.setField(classObj, f.name, val);
+				}
+			}
+		}
+
+		var constructorFunc = Reflect.makeVarArgs(function(args: Array<Dynamic>) {
+			var instance = {};
+
+			if (superClass != null && Reflect.hasField(superClass, "__isScriptClass")) {
+				var superFields: Array<crowplexus.hscript.FieldDecl> = Reflect.field(superClass, "__fields");
+				for (f in superFields) {
+					if (!f.access.contains(AStatic) && f.name != "new") {
+						initInstanceField(instance, f);
+					}
+				}
+			}
+
+			for (f in c.fields) {
+				if (!f.access.contains(AStatic) && f.name != "new") {
+					initInstanceField(instance, f);
+				}
+			}
+
+			if (constructorDecl != null) {
+				switch (constructorDecl.kind) {
+					case KFunction(fdecl):
+						var oldThis = variables.get("this");
+						var oldSuper = variables.get("super");
+						
+						variables.set("this", instance);
+						
+						if (superClass != null && Reflect.hasField(superClass, "__constructor")) {
+							variables.set("super", Reflect.makeVarArgs(function(superArgs: Array<Dynamic>) {
+								var superFields: Array<crowplexus.hscript.FieldDecl> = Reflect.field(superClass, "__fields");
+								for (sf in superFields) {
+									if (sf.name == "new") {
+										switch (sf.kind) {
+											case KFunction(sfdecl):
+												var sFunc = expr(mkDummyExpr(crowplexus.hscript.Expr.ExprDef.EFunction(sfdecl.args, sfdecl.expr, "new", sfdecl.ret)));
+												Reflect.callMethod(instance, sFunc, superArgs);
+											case KVar(_):
+
+										}
+									}
+								}
+							}));
+						}
+
+						var f = expr(mkDummyExpr(crowplexus.hscript.Expr.ExprDef.EFunction(fdecl.args, fdecl.expr, "new", fdecl.ret)));
+						Reflect.callMethod(instance, f, args);
+
+						if (oldThis != null) variables.set("this", oldThis); else variables.remove("this");
+						if (oldSuper != null) variables.set("super", oldSuper); else variables.remove("super");
+						
+					case KVar(_): 
+
+				}
+			} else if (superClass != null && Reflect.hasField(superClass, "__constructor")) {
+				Reflect.callMethod(null, Reflect.field(superClass, "__constructor"), args);
+			}
+
+			return instance;
+		});
+
+		Reflect.setField(classObj, "__constructor", constructorFunc);
+		return classObj;
+	}
+
+	function initInstanceField(instance: Dynamic, f: crowplexus.hscript.FieldDecl) {
+		switch (f.kind) {
+			case KFunction(fdecl):
+				var func = expr(mkDummyExpr(crowplexus.hscript.Expr.ExprDef.EFunction(fdecl.args, fdecl.expr, f.name, fdecl.ret)));
+				Reflect.setField(instance, f.name, func);
+			case KVar(vdecl):
+				var val = vdecl.expr != null ? expr(vdecl.expr) : null;
+				Reflect.setField(instance, f.name, val);
+		}
+	}
+
 	function doWhileLoop(econd, e) {
 		var old = declared.length;
 		do {
@@ -1147,13 +1301,24 @@ class Interp {
 	}
 
 	function call(o: Dynamic, f: Dynamic, args: Array<Dynamic>): Dynamic {
-		return Reflect.callMethod(o, f, args);
+		var oldThis = variables.get("this");
+		if (o != null) variables.set("this", o);
+		var r = Reflect.callMethod(o, f, args);
+		if (o != null) {
+			if (oldThis != null) variables.set("this", oldThis);
+			else variables.remove("this");
+		}
+		return r;
 	}
 
 	function cnew(cl: String, args: Array<Dynamic>): Dynamic {
 		var c = Type.resolveClass(cl);
 		if (c == null)
 			c = resolve(cl);
+		
+		if (c != null && Reflect.hasField(c, "__isScriptClass")) {
+			return Reflect.callMethod(null, Reflect.field(c, "__constructor"), args);
+		}
 		return Type.createInstance(c, args);
 	}
 }
