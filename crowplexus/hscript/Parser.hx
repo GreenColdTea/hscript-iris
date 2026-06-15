@@ -967,7 +967,7 @@ class Parser {
 						null;
 					}
 				 */
-				mk(EImport(path.join('.'), asStr));
+				mk(EImport(path.join('.') + (star ? ".*" : ""), asStr));
 
 			case "enum":
 				var name = getIdent();

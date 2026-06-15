@@ -65,6 +65,8 @@ class Interp {
 	var binops: Hash<Expr->Expr->Dynamic>;
 	#end
 
+	public var wildcardPackages: Array<String>;
+
 	var depth: Int;
 	var inTry: Bool;
 	var declared: Array<DeclaredVar>;
@@ -100,6 +102,8 @@ class Interp {
 		variables = new Hash();
 		imports = new Hash();
 		#end
+
+		wildcardPackages = [];
 
 		variables.set("null", null);
 		variables.set("true", true);
@@ -450,6 +454,18 @@ class Interp {
 		if (variables.exists(id)) return variables.get(id);
 		if (imports.exists(id)) return imports.get(id);
 
+		for (pack in wildcardPackages) {
+			var clName = pack + "." + id;
+			var c:Dynamic = getOrImportClass(clName);
+			if (c == null) c = Type.resolveEnum(clName);
+			if (c == null) c = Type.resolveClass(clName + "_Impl_");
+			
+			if (c != null) {
+				imports.set(id, c);
+				return c;
+			}
+		}
+
 		error(EUnknownVariable(id));
 		return null;
 	}
@@ -595,6 +611,14 @@ class Interp {
 				final aliasStr = (as != null ? " named " + as : ""); // for errors
 				if (Iris.blocklistImports.contains(v)) {
 					error(ECustom("You cannot add a blacklisted import, for class " + v + aliasStr));
+					return null;
+				}
+
+				if (StringTools.endsWith(v, ".*")) {
+					var pack = v.substr(0, v.length - 2);
+					if (!wildcardPackages.contains(pack)) {
+						wildcardPackages.push(pack);
+					}
 					return null;
 				}
 
