@@ -1185,7 +1185,34 @@ class Interp {
 	function set(o: Dynamic, f: String, v: Dynamic): Dynamic {
 		if (o == null)
 			error(EInvalidAccess(f));
-		Reflect.setProperty(o, f, v);
+
+		final getTypeName = function(val:Dynamic):String {
+			final cl = Type.getClass(val);
+			if (cl != null) return Type.getClassName(cl);
+			return Std.string(Type.typeof(val));
+		};
+
+		final setterName = "set_" + f;
+		final setterFunc = Reflect.field(o, setterName);
+		
+		if (setterFunc != null && Reflect.isFunction(setterFunc)) {
+			try {
+				Reflect.callMethod(o, setterFunc, [v]);
+				return v;
+			} catch(e:Dynamic) {
+				final gotType = getTypeName(v);
+				error(ECustom('Type mismatch for property "' + f + '". Got: ' + gotType + ' | Native: ' + e));
+				return v;
+			}
+		}
+
+		try {
+			Reflect.setProperty(o, f, v);
+		} catch(e:Dynamic) {
+			final gotType = getTypeName(v);
+			error(ECustom('Failed to set field "' + f + '" (Got: ' + gotType + '): ' + e));
+		}
+		
 		return v;
 	}
 
