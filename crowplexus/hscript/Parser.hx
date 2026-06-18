@@ -820,6 +820,25 @@ class Parser {
 							a.push(getIdent());
 						case TPOpen:
 							break;
+						case TOp(op) if (op == "<"):
+							var depth = 1;
+							while (depth > 0) {
+								var t2 = token();
+								switch (t2) {
+									case TOp(o2):
+										if (o2 == "<") depth++;
+										else if (o2 == ">") depth--;
+										else if (o2 == ">>") depth -= 2;
+										else if (o2 == ">>>") depth -= 3;
+									case TEof:
+										unexpected(t2);
+									default:
+								}
+							}
+							
+							tk = token();
+							if (tk != TPOpen) unexpected(tk);
+							break;
 						default:
 							unexpected(tk);
 							break;
